@@ -1,6 +1,7 @@
 import requests
 import time
 from datetime import datetime
+from flask import Flask
 
 # === CONFIGURACIÓN ===
 MONEDA = "LTCUSDT"
@@ -168,3 +169,30 @@ while True:
     except Exception as e:
         print(f"⚠️ Error: {e}")
         time.sleep(60)
+
+
+# === SERVIDOR KEEP-ALIVE PARA RENDER ===
+
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot LTC activo ✅"
+
+if __name__ == '__main__':
+    import threading
+    def iniciar_bot():
+        # Acá poné todo tu loop principal:
+        while True:
+            try:
+                precio_actual = obtener_precio()
+                stats = obtener_estadisticas_24h()
+                analizar_oportunidad(precio_actual, stats)
+                time.sleep(INTERVALO_MINUTOS * 60)
+            except Exception as e:
+                print(f"⚠️ Error: {e}")
+                time.sleep(60)
+
+    threading.Thread(target=iniciar_bot).start()
+    app.run(host='0.0.0.0', port=10000)
