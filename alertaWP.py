@@ -2,25 +2,19 @@ import requests
 import time
 from datetime import datetime
 from flask import Flask
-import os
 import threading
 
 # === CONFIGURACIÓN ===
 MONEDA = "LTCUSDT"
 INTERVALO_MINUTOS = 5
-DIFERENCIA_COMPRA = 5
-DIFERENCIA_VENTA = 5
-COMISION = 0.001
+UMBRAL_ALERTA = 5.0  # USD de diferencia para alertar
 NUMERO = "5492914228541"
 API_KEY = "7577157"
 
 # === VARIABLES GLOBALES ===
-en_posicion = False
-precio_entrada = None
-PRECIO_COMPRA_TARGET = None
-PRECIO_VENTA_TARGET = None
-capital_usdt = 52.0
-modo = os.getenv("MODO_BOT", "USDT")  # USDT o LTC
+precio_maximo = None
+precio_minimo = None
+ultima_alerta_tipo = None  # Para evitar spam
 
 # === FUNCIONES ===
 def obtener_precio():
@@ -45,69 +39,66 @@ def enviar_whatsapp(mensaje):
     except Exception as e:
         print(f"❌ Error WhatsApp: {e}")
 
-def calcular_ganancia_potencial(precio_compra, precio_venta, capital):
-    ltc_comprado = (capital * (1 - COMISION)) / precio_compra
-    usdt_vendido = ltc_comprado * precio_venta * (1 - COMISION)
-    ganancia = usdt_vendido - capital
-    return ganancia, (ganancia / capital) * 100
-
-def analizar_oportunidad(precio_actual, stats):
-    global en_posicion, precio_entrada, PRECIO_COMPRA_TARGET, PRECIO_VENTA_TARGET
-
+def analizar_movimiento(precio_actual):
+    global precio_maximo, precio_minimo, ultima_alerta_tipo
+    
     ahora = datetime.now().strftime("%H:%M:%S")
-
-    if not en_posicion:  # Buscamos COMPRAR
-        if PRECIO_COMPRA_TARGET is None:
-            PRECIO_COMPRA_TARGET = precio_actual - DIFERENCIA_COMPRA
-            print(f"🎯 Target COMPRA: ${PRECIO_COMPRA_TARGET:.2f}")
-
-        if precio_actual <= PRECIO_COMPRA_TARGET:
-            ganancia_potencial, porcentaje = calcular_ganancia_potencial(
-                precio_actual, precio_actual + DIFERENCIA_VENTA, capital_usdt
-            )
-            mensaje = (f"🟢 COMPRA [{ahora}]\nPrecio: ${precio_actual:.2f}\n"
-                       f"Ganancia pot.: ${ganancia_potencial:.2f} ({porcentaje:.1f}%)")
-            enviar_whatsapp(mensaje)
-            en_posicion = True
-            precio_entrada = precio_actual
-            PRECIO_VENTA_TARGET = precio_actual + DIFERENCIA_VENTA
-            PRECIO_COMPRA_TARGET = None
-
-    else:  # Buscamos VENDER
-        if PRECIO_VENTA_TARGET is None:
-            PRECIO_VENTA_TARGET = precio_entrada + DIFERENCIA_VENTA
-            print(f"🎯 Target VENTA: ${PRECIO_VENTA_TARGET:.2f}")
-
-        if precio_actual >= PRECIO_VENTA_TARGET:
-            ganancia, porcentaje = calcular_ganancia_potencial(precio_entrada, precio_actual, capital_usdt)
-            mensaje = (f"🔴 VENTA [{ahora}]\nPrecio: ${precio_actual:.2f}\n"
-                       f"Ganancia: ${ganancia:.2f} ({porcentaje:.1f}%)")
-            enviar_whatsapp(mensaje)
-            en_posicion = False
-            precio_entrada = None
-            PRECIO_COMPRA_TARGET = precio_actual - DIFERENCIA_COMPRA
-            PRECIO_VENTA_TARGET = None
-
+    
+    # Inicializar referencias si es la primera vez
+    if precio_maximo is None or precio_minimo is None:
+        precio_maximo = precio_actual
+        precio_minimo = precio_actual
+        print(f"🔹 Inicializado: Máx=${precio_maximo:.2f} | Mín=${precio_minimo:.2f}")
+        return
+    
+    # Actualizar máximo y mínimo
+    if precio_actual > precio_maximo:
+        precio_maximo = precio_actual
+        print(f"📈 Nuevo máximo: ${precio_maximo:.2f}")
+    
+    if precio_actual < precio_minimo:
+        precio_minimo = precio_actual
+        print(f"📉 Nuevo mínimo: ${precio_minimo:.2f}")
+    
+    # Verificar BAJADA (desde el máximo)
+    bajada = precio_maximo - precio_actual
+    if bajada >= UMBRAL_ALERTA and ultima_alerta_tipo != "BAJADA":
+        mensaje = (f"🔴 BAJADA IMPORTANTE [{ahora}]\n"
+                   f"Precio actual: ${precio_actual:.2f}\n"
+                   f"Bajó ${bajada:.2f} desde máximo (${precio_maximo:.2f})")
+        enviar_whatsapp(mensaje)
+        ultima_alerta_tipo = "BAJADA"
+        # Resetear mínimo para próxima subida
+        precio_minimo = precio_actual
+        print(f"🔄 Mínimo reseteado a ${precio_minimo:.2f}")
+    
+    # Verificar SUBIDA (desde el mínimo)
+    subida = precio_actual - precio_minimo
+    if subida >= UMBRAL_ALERTA and ultima_alerta_tipo != "SUBIDA":
+        mensaje = (f"🟢 SUBIDA IMPORTANTE [{ahora}]\n"
+                   f"Precio actual: ${precio_actual:.2f}\n"
+                   f"Subió ${subida:.2f} desde mínimo (${precio_minimo:.2f})")
+        enviar_whatsapp(mensaje)
+        ultima_alerta_tipo = "SUBIDA"
+        # Resetear máximo para próxima bajada
+        precio_maximo = precio_actual
+        print(f"🔄 Máximo reseteado a ${precio_maximo:.2f}")
 
 def iniciar_bot():
-    print("🚀 Bot iniciado en modo:", modo)
-    global en_posicion, precio_entrada
-    if modo.upper() == "LTC":
-        en_posicion = True
-        precio_entrada = float(os.getenv("PRECIO_ENTRADA", "160"))  # opcional
-        print(f"🔹 Modo con LTC (entrada ${precio_entrada})")
-    else:
-        print("🔹 Modo con USDT")
-
-    enviar_whatsapp(f"🤖 Bot LTC activo. Estado: {'CON LTC' if en_posicion else 'CON USDT'}")
-
+    print("🚀 Bot de Alertas LTC iniciado")
+    enviar_whatsapp("🤖 Bot LTC activo - Alertas de movimientos ±$5")
+    
     while True:
         try:
             precio_actual = obtener_precio()
             stats = obtener_estadisticas_24h()
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Precio: ${precio_actual:.2f} ({stats['change_percent']}%)")
-            analizar_oportunidad(precio_actual, stats)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Precio: ${precio_actual:.2f} "
+                  f"| Máx: ${precio_maximo if precio_maximo else 0:.2f} "
+                  f"| Mín: ${precio_minimo if precio_minimo else 0:.2f}")
+            
+            analizar_movimiento(precio_actual)
             time.sleep(INTERVALO_MINUTOS * 60)
+            
         except Exception as e:
             print(f"⚠️ Error: {e}")
             time.sleep(60)
@@ -117,7 +108,8 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return f"Bot LTC activo ✅ - Modo: {modo}"
+    estado = f"Precio actual: ${precio_maximo if precio_maximo else 'cargando...'}"
+    return f"Bot LTC Alertas activo ✅<br>{estado}"
 
 if __name__ == '__main__':
     threading.Thread(target=iniciar_bot, daemon=True).start()
